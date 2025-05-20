@@ -1,0 +1,282 @@
+# Library Install
+! pip install mysql-connector-python --quiet
+! pip install pandas --quiet
+! pip install SQLAlchemy --quiet
+
+#Importing The Library
+import mysql.connector
+import pandas as pd
+
+from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
+
+# Import Credentials
+## Global Variables
+
+host       = "localhost"
+user       = "Xccelerate1"
+password   = "12345"
+database   = "db_Nike_Database_Project"
+table_name = "Nike_Inventory_Database"
+
+csv_path   = '/Users/chrisl/Downloads/Nike_Inventory_Database.csv' 
+
+#Library System Function
+## Initialize Database
+def database_init(h, u, p, db=None):
+    """
+    If db is None, returns a connection without selecting a database.
+    Otherwise connects to the specified database.
+    """
+    if db:
+        return mysql.connector.connect(host=h, user=u, password=p, database=db)
+    else:
+        return mysql.connector.connect(host=h, user=u, password=p)
+
+database_init(host, user, password)
+
+## Create a datbase if not yet existed
+def ensure_database_exists():
+    """Create the database if it doesn't already exist."""
+    conn = database_init(host, user, password)
+    cursor = conn.cursor()
+    cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{database}`")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# ensure_database_exists()
+
+## Create a table and insert bulk data
+
+def table_creation_and_insert():
+    """Read the CSV and bulk-insert into MySQL using pandas.to_sql."""
+    # 1) Make sure the database exists
+    ensure_database_exists()
+
+    # 2) Read your CSV into pandas
+    df_items = pd.read_csv(csv_path)
+    df_items['availabe'] = df_items['QTY']
+
+    # 3) Build the SQLAlchemy engine (no port in URI)
+    engine = create_engine(
+        f"mysql+mysqlconnector://{user}:{password}@{host}/{database}",
+        echo=False
+    )
+
+    try:
+        # 4) Write to SQL, replacing the table if it exists
+        df_items.to_sql(
+            name=table_name,
+            con=engine,
+            if_exists="fail",  # or 'append'
+            index=False,
+            chunksize=5
+        )
+        print("✅ Data inserted successfully!")
+    except SQLAlchemyError as e:
+        print("❌ Failed to insert data:", e)
+    finally:
+        # 5) Clean up
+        engine.dispose()
+
+# table_creation_and_insert()
+
+#LISTING ITEMS
+
+def list_items():
+
+    conn = database_init(host, user, password, database)
+
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT * FROM {table_name}")
+    headers = [col[0] for col in cursor.description]
+    Items = cursor.fetchall()
+    print("\nAvailable Quantity:")
+
+    print(headers)
+    for b in Items:
+        print(b)
+
+    cursor.close()
+    conn.close()
+
+# list_items()
+
+# SEARCHING AN ITEM
+
+def search_item(keyword):
+
+    conn = database_init(host, user, password, database)
+    
+    cursor = conn.cursor()
+    query = f"SELECT * FROM {table_name} WHERE Name LIKE %s OR sku LIKE %s"
+    param = f"%{keyword}%"
+    cursor.execute(query, (param, param))
+    results = cursor.fetchall()
+    headers = [col[0] for col in cursor.description]
+    if results:
+        print(f"\nSearch Results for '{keyword}':")
+        print(headers)
+        for r in results:
+            print(r)
+    else:
+        print(f"No items found matching '{keyword}'.")
+
+    cursor.close()
+    conn.close()
+
+# search_items("Warm Hugz")
+
+#ISSUING AN ITEM
+
+def issue_item(unique_item_number):
+    conn = database_init(host, user, password, database)
+    cursor = conn.cursor()
+
+    try:
+        # 1) Check how many copies are available for this Unique Item Number
+        query = f"SELECT `Unique Item Number` FROM {table_name} WHERE `Unique Item Number` = %s"
+        print(f"Executing query: {query} with parameter: {unique_item_number}")
+        cursor.execute(query, (unique_item_number,))
+        row = cursor.fetchone()
+
+        if row and row[0] > 0:
+            # 2) Decrement available count
+            update_query = (
+                f"UPDATE {table_name} "
+                f"SET available = available - 1 "
+                f"WHERE `Unique Item Number` = %s"
+            )
+            print(f"Executing update query: {update_query} with parameter: {unique_item_number}")
+            cursor.execute(update_query, (unique_item_number,))
+            conn.commit()
+            print("Quantity Available.")
+        else:
+            print("⚠️ Quantity not available. Must Place Order")
+
+    except Exception as e:
+        print(f"Database Error: {e}")
+
+    finally:
+        # Close the cursor and connection
+        cursor.close()
+
+#RETURNING AN ITEM
+
+def return_item(unique_item_number):
+    conn = database_init(host, user, password, database)
+    cursor = conn.cursor()
+
+    try:
+        # Fetch the current QTY for the given Unique Item Number
+        cursor.execute(
+            f"SELECT QTY FROM {table_name} WHERE `Unique Item Number` = %s",
+            (unique_item_number,)
+        )
+        row = cursor.fetchone()
+
+        if row:
+            current_qty = row[0]
+            # Increment the quantity
+            cursor.execute(
+                f"UPDATE {table_name} SET available = available + 1 WHERE `Unique Item Number` = %s",
+                (unique_item_number,)
+            )
+            conn.commit()
+            print("Item returned successfully.")
+        else:
+            print("⚠️ Unique Item Number not found.")
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+    finally:
+        # Close the cursor and connection
+        cursor.close()
+        conn.close()
+
+#ADDING AN ITEM
+
+def add_item():
+    # Prompt the user for input
+    unique_item_number = input("Enter unique item number: ")
+    name = input("Enter item name: ")
+    item_type = input("Enter item type: ")
+    sku = input("Enter SKU number: ")
+    
+    # Validate the quantity input
+    try:
+        quantity = int(input("Enter number of items: "))
+        available = int(input("Enter number of available items: "))
+    except ValueError:
+        print("Invalid number. Setting quantity to 1.")
+        quantity = 1
+
+    # Initialize the database connection
+    conn = database_init(host, user, password, database)
+    cursor = conn.cursor()
+
+    try:
+        # Insert the new item into the database
+        cursor.execute(
+            f"INSERT INTO {table_name} (`unique item number`, name, `item type`, sku, QTY, available) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (unique_item_number , name, item_type, sku, quantity, available)
+        )
+        conn.commit()
+        print("Item added successfully.")
+
+    except mysql.connector.IntegrityError as e:
+        # Handle duplicate entry errors
+        print(f"⚠️ Failed to add item: {e}")
+        if "Duplicate entry" in str(e):
+            print("⚠️ The Unique Item Number or SKU already exists in the database.")
+
+    except mysql.connector.Error as err:
+        # Handle other database errors
+        print(f"Database Error: {err}")
+
+    finally:
+        # Close the cursor and connection
+        cursor.close()
+        conn.close()
+
+#COMBINING ALL FUNCTIONS
+
+def main():
+    try:
+        table_creation_and_insert()
+    except:
+        print("Table is already created - If you want to recreate then delete the table first")
+
+    while True:
+        print("\nNike Inventory Management System")
+        print("1. List all items")
+        print("2. Search items")
+        print("3. Issue an item")
+        print("4. Return an item")
+        print("5. Add a new item")
+        print("6. Exit")
+        choice = input("Enter choice: ")
+
+        if choice == '1':
+            list_items()
+        elif choice == '2':
+            kw = input("Enter Unique Name or SKU to search: ")
+            search_item(kw)
+        elif choice == '3':
+            bid = input("Enter Unique Item Number to search: ")
+            issue_item(int(bid))
+        elif choice == '4':
+            bid = input("Enter item Unique Item Number to return: ")
+            return_item(int(bid))
+        elif choice == '5':
+            add_item()
+        elif choice == '6':
+            print("Goodbye!")
+            break
+        else:
+            print("Invalid choice. Please try again.")
+
+main()
